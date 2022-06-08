@@ -286,15 +286,40 @@ local function _build_request(qname, id, no_recurse, opts)
     local flags
     if no_recurse then
         -- print("found no recurse")
-        flags = "\0\0"
+        flags = "\0\32" -- set AD bit to 1, CD bit to 0. see DNSSEC
     else
-        flags = "\1\0"
+        flags = "\1\32" -- set AD bit to 1, CD bit to 0. see DNSSEC
     end
 
     local nqs = "\0\1"
     local nan = "\0\0"
     local nns = "\0\0"
     local nar = "\0\0"
+
+    local ar = ""
+    if opts and opts.client_ip and opts.client_ip ~= "" then
+        -- TODO: support IPv6 address
+        -- extend with EDNS client subnet, rfc7871, rfc6891
+        nar = "\0\1"
+        local rr_name = "\0"
+        local rr_type = "\0\41"
+        local rr_class = char(0x10, 0) -- copied from dig which uses 4096 as payload size
+        local rr_ttl = "\0\0\0\0"
+
+        local option_code = "\0\8"
+        local family = "\0\1"
+        -- Google public dns requires client subnet prefix no larger than 24. Use 24
+        local prefix = "\24\0"
+        local segments = {}
+        gsub(opts.client_ip, "([^.]+)%.?", function(s) return insert(segments, char(tonumber(s))) end, 3)
+        local addr = concat(segments, "")
+        local option_data = family .. prefix .. addr
+        local option_len = #option_data
+        local option = option_code .. char(rshift(option_len, 8), band(option_len, 0xff)) .. option_data
+        local rd_len = #option
+        ar = rr_name .. rr_type .. rr_class .. rr_ttl .. char(rshift(rd_len, 8), band(rd_len, 0xff)) .. option
+    end
+
     local typ = char(rshift(qtype, 8), band(qtype, 0xff))
     local class = "\0\1"    -- the Internet class
 
@@ -306,7 +331,7 @@ local function _build_request(qname, id, no_recurse, opts)
 
     return {
         ident_hi, ident_lo, flags, nqs, nan, nns, nar,
-        name, typ, class
+        name, typ, class, ar
     }
 end
 
